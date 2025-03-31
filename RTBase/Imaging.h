@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "Core.h"
 #define STB_IMAGE_IMPLEMENTATION
@@ -6,6 +6,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define __STDC_LIB_EXT1__
 #include "stb_image_write.h"
+#include "denoiser.h"
 
 
 // Stop warnings about buffer overruns if size is zero. Size should never be zero and if it is the code handles it.
@@ -216,35 +217,126 @@ public:
 	}
 };
 
+#pragma once
+#include <OpenImageDenoise/oidn.h>
+
 class Film
 {
 public:
-	Colour* film;
 	unsigned int width;
 	unsigned int height;
-	int SPP;
 	ImageFilter* filter;
-	void splat(const float x, const float y, const Colour& L) {
-		float filterWeights[25]; // Storage to cache weightsunsigned int indices[25]; // Store indices to minimize computations unsigned int used = 0;
-		unsigned int indices[25];
-		unsigned int used = 0;
-		float total = 0;
-		int size = filter->size();
-		for (int i = -size; i <= size; i++) {
-			for (int j = -size; j <= size; j++) {
-				int px = (int)x + j;
-				int py = (int)y + i;
-				if (px >= 0 && px < width && py >= 0 && py < height) {
-					indices[used] = (py * width) + px;
-					filterWeights[used] = filter->filter(j, i); total += filterWeights[used];
-					used++;
-				}
-			}
-		}
-		for (int i = 0; i < used; i++) {
-			film[indices[i]] = film[indices[i]] + (L * filterWeights[i] / total);
-		}
+
+	Colour* film;            // 累计渲染结果
+	float* weightBuffer;     // 每个像素累计权重
+	int* sppBuffer;          // 每个像素的实际采样数
+	float* albedoBuffer;     // Albedo数据
+	float* normalBuffer;     // 法线数据
+	float* colourBuffer;     // 原始颜色数据
+	float* outputBuffer;     // 降噪后的输出数据
+	int SPP;
+
+	void init(int _width, int _height, ImageFilter* _filter)
+	{
+		width = _width;
+		height = _height;
+		filter = _filter;
+
+		film = new Colour[width * height];
+		weightBuffer = new float[width * height];
+		sppBuffer = new int[width * height];
+		albedoBuffer = new float[width * height * 3];
+		normalBuffer = new float[width * height * 3];
+		colourBuffer = new float[width * height * 3];
+		outputBuffer = new float[width * height * 3];
+
+		clear();
 	}
+
+	void clear()
+	{
+		memset(film, 0, width * height * sizeof(Colour));
+		memset(weightBuffer, 0, width * height * sizeof(float));
+		memset(sppBuffer, 0, width * height * sizeof(int));
+		memset(albedoBuffer, 0, width * height * 3 * sizeof(float));
+		memset(normalBuffer, 0, width * height * 3 * sizeof(float));
+		memset(colourBuffer, 0, width * height * 3 * sizeof(float));
+		memset(outputBuffer, 0, width * height * 3 * sizeof(float));
+		SPP = 0;
+	}
+
+	void splat(const float x, const float y, const Colour& L)
+	{
+		int ix = static_cast<int>(x);
+		int iy = static_cast<int>(y);
+		if (ix < 0 || ix >= (int)width || iy < 0 || iy >= (int)height)
+			return;
+		int index = iy * width + ix;
+
+		film[index] = film[index] + L;
+		weightBuffer[index] += 1.0f;
+		sppBuffer[index]++;
+
+		int pixelIndex = index * 3;
+		colourBuffer[pixelIndex + 0] = film[index].r / weightBuffer[index];
+		colourBuffer[pixelIndex + 1] = film[index].g / weightBuffer[index];
+		colourBuffer[pixelIndex + 2] = film[index].b / weightBuffer[index];
+	}
+
+	void incrementSPP()
+	{
+		SPP++;
+	}
+
+	void AOV(int x, int y, const Colour& albedo, const Vec3& normal)
+	{
+		if (x < 0 || x >= (int)width || y < 0 || y >= (int)height)
+			return;
+		int index = (y * width + x) * 3;
+
+		albedoBuffer[index + 0] = albedo.r;
+		albedoBuffer[index + 1] = albedo.g;
+		albedoBuffer[index + 2] = albedo.b;
+
+		normalBuffer[index + 0] = normal.x;
+		normalBuffer[index + 1] = normal.y;
+		normalBuffer[index + 2] = normal.z;
+	}
+
+	void save(std::string filename)
+	{
+		DenoiseFilm(this);
+		stbi_write_hdr(filename.c_str(), width, height, 3, outputBuffer);
+	}
+
+	void DenoiseFilm(Film* film)
+	{
+		oidn::DeviceRef device = oidn::newDevice();
+		device.commit();
+
+		size_t imageSize = film->width * film->height * 3 * sizeof(float);
+
+		oidn::BufferRef colorBuf = device.newBuffer(imageSize);
+		oidn::BufferRef albedoBuf = device.newBuffer(imageSize);
+		oidn::BufferRef normalBuf = device.newBuffer(imageSize);
+		oidn::BufferRef outputBuf = device.newBuffer(imageSize);
+
+		memcpy(colorBuf.getData(), film->colourBuffer, imageSize);
+		memcpy(albedoBuf.getData(), film->albedoBuffer, imageSize);
+		memcpy(normalBuf.getData(), film->normalBuffer, imageSize);
+
+		oidn::FilterRef filter = device.newFilter("RT");
+		filter.setImage("color", colorBuf, oidn::Format::Float3, film->width, film->height);
+		filter.setImage("albedo", albedoBuf, oidn::Format::Float3, film->width, film->height);
+		filter.setImage("normal", normalBuf, oidn::Format::Float3, film->width, film->height);
+		filter.setImage("output", outputBuf, oidn::Format::Float3, film->width, film->height);
+		filter.set("hdr", true);
+		filter.commit();
+		filter.execute();
+
+		memcpy(film->outputBuffer, outputBuf.getData(), imageSize);
+	}
+
 	void tonemap(float r, float g, float b, unsigned char& outR, unsigned char& outG, unsigned char& outB, float exposure = 1.f)
 	{
 		// Apply exposure correction
@@ -276,32 +368,15 @@ public:
 		outG = static_cast<unsigned char>(clamp(g * 255.0f, 0.0f, 255.0f));
 		outB = static_cast<unsigned char>(clamp(b * 255.0f, 0.0f, 255.0f));
 	}
-	// Do not change any code below this line
-	void init(int _width, int _height, ImageFilter* _filter)
+
+	~Film()
 	{
-		width = _width;
-		height = _height;
-		film = new Colour[width * height];
-		clear();
-		filter = _filter;
-	}
-	void clear()
-	{
-		memset(film, 0, width * height * sizeof(Colour));
-		SPP = 0;
-	}
-	void incrementSPP()
-	{
-		SPP++;
-	}
-	void save(std::string filename)
-	{
-		Colour* hdrpixels = new Colour[width * height];
-		for (unsigned int i = 0; i < (width * height); i++)
-		{
-			hdrpixels[i] = film[i] / (float)SPP;
-		}
-		stbi_write_hdr(filename.c_str(), width, height, 3, (float*)hdrpixels);
-		delete[] hdrpixels;
+		delete[] film;
+		delete[] weightBuffer;
+		delete[] sppBuffer;
+		delete[] albedoBuffer;
+		delete[] normalBuffer;
+		delete[] colourBuffer;
+		delete[] outputBuffer;
 	}
 };

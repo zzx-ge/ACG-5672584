@@ -11,7 +11,6 @@
 #include <thread>
 #include <functional>
 #include <mutex>
-#include "shadermanager.h"
 
 #define MAX_DEPTH 8
 
@@ -456,7 +455,8 @@ public:
 			for (int y = startY; y < endY; y++) {
 				for (int x = 0; x < film->width; x++) {
 					Colour finalColor(0.f, 0.f, 0.f);
-
+					Colour Albedo(0.f, 0.f, 0.f);
+					Colour Viewnormal(0.f, 0.f, 0.f);
 					// Path tracing: multiple samples per pixel (anti-aliasing)
 					int numSamples = 16; // Adjust for quality
 					for (int s = 0; s < numSamples; s++) {
@@ -467,16 +467,22 @@ public:
 
 						// Path tracing
 						Colour pathThroughput(1.f, 1.f, 1.f);
-						finalColor = pathTrace(ray, pathThroughput, 0, &sampler) + finalColor;
+						finalColor = finalColor + pathTrace(ray, pathThroughput, 0, &sampler) + finalColor;
+						Albedo = Albedo + albedo(ray);
+						Viewnormal = Viewnormal + viewNormals(ray);
+						Albedo = albedo(ray);
+						Viewnormal = viewNormals(ray);
 					}
 
 					// Average color over samples
 					finalColor = finalColor / float(numSamples);
-
+					Albedo = Albedo / float(numSamples);
+					Viewnormal = Viewnormal / float(numSamples);
 					// Store final pixel color (Thread-Safe)
 					{
 						std::lock_guard<std::mutex> lock(filmMutex); // Protect shared memory
 						film->splat(x, y, finalColor);
+						film->AOV(x, y, Albedo, Vec3(Viewnormal.r, Viewnormal.g, Viewnormal.b));
 					}
 
 					// Tonemapping and gamma correction
