@@ -11,8 +11,6 @@
 // Stop warnings about buffer overruns if size is zero. Size should never be zero and if it is the code handles it.
 #pragma warning( disable : 6386)
 
-constexpr float texelScale = 1.0f / 255.0f;
-
 template <typename T>
 T clamp(T value, T minVal, T maxVal) {
 	return (value < minVal) ? minVal : (value > maxVal) ? maxVal : value;

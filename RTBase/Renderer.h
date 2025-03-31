@@ -50,11 +50,12 @@ public:
 		Colour result(0.0f);
 		const float epsilon = 1e-3f;
 
+		
 		// ========== 光源采样 ==========
 		if (!scene->lights.empty()) {
 			// 采样光源（包含PMF）
 			float lightPMF;
-			Light* light = scene->sampleLight(sampler, lightPMF);
+			Light* light = scene->sampleLight(sampler, lightPMF); //check
 
 			// 光源采样位置和方向
 			Colour emitted;
@@ -65,27 +66,59 @@ public:
 				Vec3 wi = (lightPos - shadingData.x).normalize();
 
 				// 可见性检测
-				Ray shadowRay(shadingData.x + wi * epsilon, wi);
-				float tMax = (lightPos - shadingData.x).length() - 2 * epsilon;
-				bool visible = scene->traverse(shadowRay).t >= tMax;
-
+				bool visible = scene->visible(shadingData.x, lightPos);
+				//bool visible = true;
 				if (visible) {
 					// 几何项计算
+					float distSq = (lightPos - shadingData.x).lengthSq();
 					float cosTheta = Dot(wi, shadingData.sNormal);
 					float cosLight = light->isArea() ? Dot(-wi, light->normal(shadingData, wi)) : 1.0f;
-					float G = light->isArea() ? (cosTheta * cosLight) / (lightPos - shadingData.x).lengthSq() : cosTheta;
+					float G = light->isArea() ? (cosTheta * cosLight) / distSq : cosTheta;
+
+					// 面光源pdf转换为立体角pdf,后续其他光源pdf也需要转换
+					if (light->isArea()) {
+						float dist2 = (lightPos - shadingData.x).lengthSq();
+						if (cosLight <= 1e-3f || dist2 <= 1e-6f) {
+							//return Colour(0.f);
+							lightPdf = 0.f;
+						}
+						lightPdf = lightPdf * dist2 / cosLight;
+					}
+					// Environment light
+					else {
+						lightPdf = light->PDF(shadingData, wi);
+					}
+
+					// 计算所有光源在wi方向的总pdf
+					float allLightPdfSum = 0.f;
+					for (auto otherLight : scene->lights) {
+						float pmf = scene->pmf(otherLight);
+						float otherPdf = 0.f;
+						if (otherLight->isArea()) {
+							float otherCosLight = max(0.0f, Dot(-wi, otherLight->normal(shadingData, wi)));
+							if (otherCosLight > 0) {
+								float otherPdfArea = otherLight->PDF(shadingData, wi);
+								otherPdf = otherPdfArea * distSq / otherCosLight;
+							}
+						}
+						else {
+							otherPdf = otherLight->PDF(shadingData, wi);
+						}
+						allLightPdfSum += pmf * otherPdf;
+					}
 
 					// 计算BSDF
 					Colour bsdfVal = shadingData.bsdf->evaluate(shadingData, wi);
 					float bsdfPdf = shadingData.bsdf->PDF(shadingData, wi);
 
 					// MIS权重（考虑光源PMF）
-					float misWeight = (lightPMF * lightPdf) / (lightPMF * lightPdf + bsdfPdf + 1e-6f);
-					result = result + bsdfVal * emitted * G * misWeight / (lightPMF * lightPdf);
+					float misWeight = (lightPMF * lightPdf) / (allLightPdfSum + bsdfPdf + 1e-6f);
+					//float misWeight = 1.f; // for debug
+					result = result + bsdfVal * emitted * G * misWeight / (lightPMF * lightPdf + 1e-6f);
 				}
 			}
 		}
-
+		
 		// ========== BSDF采样 ==========
 		float bsdfPdf;
 		Colour bsdfVal;
@@ -98,26 +131,47 @@ public:
 
 			// 获取辐射亮度
 			Colour Le(0.0f);
+			Vec3 lightpos;
+			Vec3 n_light;
+			bool envintersect = false;
 			if (lightIntersection.t < FLT_MAX) {
 				ShadingData lightShading = scene->calculateShadingData(lightIntersection, visRay);
 				if (lightShading.bsdf->isLight()) {
-					Le = lightShading.bsdf->emit(lightShading, -wi);
+					Le = lightShading.bsdf->emit();
+					lightpos = lightShading.x;
+					n_light = lightShading.sNormal;
 				}
 			}
-			else if (scene->background) {
-				ShadingData lightShading;
-				Le = scene->background->evaluate(lightShading, wi);
+			else{
+				if (scene->background) {
+					ShadingData lightShading;
+					Le = scene->background->evaluate(lightShading, wi);
+					envintersect = true;
+				}
 			}
 
 			if (!Le.isZero()) {
 				// 计算光源PDF（包含PMF）
 				float lightPdfSum = 0.0f;
+				
 				for (auto light : scene->lights) {
 					float pmf = scene->pmf(light);
-					lightPdfSum += pmf * light->PDF(shadingData, wi);
+					if (light->isArea()) {
+						AreaLight* arealight = static_cast<AreaLight*> (light);
+						if (arealight->triangle->inside(lightpos)) {
+							float distSq = (lightpos - shadingData.x).lengthSq();
+							float cosLight = Dot(-wi, n_light);
+							float pdf_dir = (cosLight > 0) ? light->PDF(shadingData, wi) * distSq / cosLight : 0.0f;
+							lightPdfSum += pmf * pdf_dir;
+						}
+					}
+					else {
+						// Environment light
+						if (envintersect) lightPdfSum += pmf * light->PDF(shadingData, wi);
+					}
 				}
 
-				if (scene->background) {
+				if (scene->background && envintersect) {
 					float bgpmf = scene->pmf(scene->background);
 					lightPdfSum += bgpmf * scene->background->PDF(shadingData, wi);
 				}
@@ -128,6 +182,7 @@ public:
 				result = result + bsdfVal * Le * cosTheta * misWeight / bsdfPdf;
 			}
 		}
+		
 
 		return result;
 	}
@@ -137,7 +192,8 @@ public:
 		Colour indirect(0.0f);
 
 		for (const VPL& vpl : scene->vpls) {
-			if (!scene->visible(shadingData.x, vpl.position))
+
+			if (!scene->visible(shadingData.x + shadingData.sNormal * 1e-3f, vpl.position))
 				continue;
 
 			Vec3 wi = (vpl.position - shadingData.x).normalize();
@@ -152,8 +208,8 @@ public:
 			float pdf_bsdf = shadingData.bsdf->PDF(shadingData, wi);
 
 			// Balance heuristic
-			float weight = (pdf_bsdf * pdf_bsdf) /
-				(pdf_bsdf * pdf_bsdf + vpl.pdf_light * vpl.pdf_light + 1e-6f);
+			float weight = (pdf_bsdf) /
+				(pdf_bsdf + vpl.pdf_light + 1e-6f);
 
 			indirect = indirect + f * vpl.flux * G * weight;
 		}
@@ -161,7 +217,164 @@ public:
 		return indirect / float(max(1, int(scene->vpls.size())));
 	}
 
+	/*
+	std::vector<PathVertex> traceLight(Sampler* sampler) {
+		std::vector<PathVertex> path;
 
+		// 选择光源并采样初始光线
+		float lightPdf;
+		Light* light = scene->sampleLight(sampler, lightPdf);
+		Vec3 lightPos = light->samplePositionFromLight(sampler, lightPdf);
+		Vec3 lightDir = light->sampleDirectionFromLight(sampler, lightPdf);
+
+		PathVertex vertex;
+		ShadingData shadingdata;
+		vertex.position = lightPos;
+		vertex.normal = light->normal(shadingdata, lightPos);
+		vertex.wi = lightDir;
+		vertex.beta = light->totalIntegratedPower() * Dot(vertex.normal, lightDir) / lightPdf;
+		vertex.pdf = lightPdf;
+		vertex.bsdf = nullptr;
+		path.push_back(vertex);
+
+		// 传播光线并记录路径
+		Ray ray(lightPos + lightDir * EPSILON, lightDir);
+		for (int depth = 0; depth < 10; ++depth) {
+			IntersectionData hit = scene->traverse(ray);
+			if (hit.t == FLT_MAX) break;
+
+			ShadingData shading = scene->calculateShadingData(hit, ray);
+			vertex.position = shading.x;
+			vertex.normal = shading.sNormal;
+			vertex.bsdf = shading.bsdf;
+
+			// 采样BSDF继续路径
+			Vec3 wo = -ray.dir;
+			Vec3 wi;
+			Colour bsdfVal;
+			float bsdfPdf;
+			wi = shading.bsdf->sample(shading, sampler, bsdfVal, bsdfPdf);
+
+			// 更新吞吐量和PDF
+			vertex.beta = vertex.beta * bsdfVal * Dot(wi, shading.sNormal) / bsdfPdf;
+			vertex.pdf = bsdfPdf;
+			path.push_back(vertex);
+
+			// 更新光线
+			ray = Ray(shading.x + wi * EPSILON, wi);
+		}
+		return path;
+	}
+	*/
+	/*
+	void connectToCamera(const PathVertex& vertex) {
+		Vec3 cameraPos = scene->camera.origin;
+		Vec3 dirToCamera = (cameraPos - vertex.position).normalize();
+
+		if (!scene->visible(vertex.position, cameraPos)) return;
+
+		float u, v;
+		if (!scene->camera.projectOntoCamera(vertex.position, u, v)) return;
+
+		// 计算路径贡献
+		Colour bsdfVal = vertex.bsdf ? vertex.bsdf->evaluate();
+		float cosTheta = Dot(dirToCamera, vertex.normal);
+
+	}
+	*/
+
+	// === Light Tracing integrated with MIS Path Tracing ===
+	void traceLightPaths(Sampler* sampler, int numPaths, int maxDepth) {
+
+		for (int pathIdx = 0; pathIdx < numPaths; ++pathIdx) {
+			// Step 1: 光源采样起点
+			float lightPdf;
+			Light* light = scene->sampleLight(sampler, lightPdf);
+			Vec3 lightPos = light->samplePositionFromLight(sampler, lightPdf);
+			float dirPdf;
+			Vec3 wi = light->sampleDirectionFromLight(sampler, dirPdf);
+
+			// 将lightPdf转化为solid angle pdf, 距离先为1
+			float cosThetaLight = max(0.f, Dot(wi, light->normal(ShadingData(), lightPos)));
+			lightPdf = lightPdf / max(cosThetaLight, EPSILON);
+			
+			// 初始化路径贡献 (beta)
+			float pmf = scene->pmf(light);
+			Colour beta = light->evaluate(ShadingData(), wi) * cosThetaLight / (lightPdf * dirPdf * pmf);
+
+
+			// 初始光线
+			Ray ray(lightPos + wi * EPSILON, wi);
+
+			// Step 2: 路径追踪
+			for (int depth = 0; depth < maxDepth; ++depth) {
+				IntersectionData hit = scene->traverse(ray);
+				if (hit.t == FLT_MAX) break;
+
+				ShadingData shading = scene->calculateShadingData(hit, ray);
+
+				// 得到真正的lightPdf
+				lightPdf *= (lightPos - shading.x).lengthSq();
+
+				// Step 3: 连接到相机 (Pinhole相机)
+				Vec3 dirToCam = (scene->camera.origin - shading.x).normalize();
+				if (scene->visible(shading.x + shading.sNormal * EPSILON, scene->camera.origin)) {
+					// 投影到相机
+					float u, v;
+					if (scene->camera.projectOntoCamera(shading.x, u, v)) {
+						Colour bsdfVal = shading.bsdf->evaluate(shading, dirToCam);
+						float cosTheta = max(0.0f, Dot(shading.sNormal, dirToCam));
+
+						// MIS权重计算
+						float bsdfPdf = shading.bsdf->PDF(shading, dirToCam);
+						float allLightPdfSum = 0.0f;
+						for (auto otherLight : scene->lights) {
+							float pmf = scene->pmf(otherLight);
+							float otherPdf = 0.f;
+							if (otherLight->isArea()) {
+								AreaLight* areaLight = static_cast<AreaLight*>(otherLight);
+								Vec3 samplePoint = areaLight->triangle->sample(sampler, otherPdf);
+								float distSq = (samplePoint - shading.x).lengthSq();
+								float cosLight = max(0.0f, Dot(-dirToCam, areaLight->triangle->gNormal()));
+								if (cosLight > EPSILON) {
+									otherPdf = (1.0f / areaLight->triangle->area) * distSq / cosLight;
+								}
+							}
+							else {
+								otherPdf = otherLight->PDF(shading, dirToCam);
+							}
+							allLightPdfSum += pmf * otherPdf;
+						}
+						float misWeight = (lightPdf * dirPdf) / (allLightPdfSum + bsdfPdf + 1e-6f);
+
+						// 累加贡献到图像
+						Colour contrib = beta * bsdfVal * cosTheta * misWeight;
+						film->splat(u, v, beta * bsdfVal * cosTheta * misWeight);
+					}
+				}
+
+				// Step 4: 继续传播路径
+				Colour bsdfVal;
+				float bsdfPdf;
+				Vec3 newWi = shading.bsdf->sample(shading, sampler, bsdfVal, bsdfPdf);
+				if (bsdfPdf < EPSILON || bsdfVal.isZero()) break;
+
+				// 更新路径贡献
+				float cosTheta = max(0.0f, Dot(newWi, shading.sNormal));
+				beta = beta * bsdfVal * cosTheta / bsdfPdf;
+
+				// Russian Roulette (optional)
+				if (depth > 3) {
+					float rr = min(0.9f, beta.maxComponent());
+					if (sampler->next() > rr) break;
+					beta = beta / rr;
+				}
+
+				// 更新光线
+				ray = Ray(shading.x + newWi * EPSILON, newWi);
+			}
+		}
+	}
 
 
 	Colour pathTrace(Ray& r, Colour& pathThroughput, int depth, Sampler* sampler) {
@@ -182,6 +395,7 @@ public:
 			// ----------- 间接光照 -----------
 			Colour indirectVPL = pathThroughput * estimateIndirectFromVPLs(shadingData, sampler);
 
+			
 			// ----------- 俄罗斯轮盘赌 -----------
 			if (depth > 3) {
 				float rrProb = min(0.95f, pathThroughput.Lum());
@@ -197,12 +411,12 @@ public:
 			if (pdf > 0.0f && !bsdfVal.isZero()) {
 				float cosTheta = Dot(wi, shadingData.sNormal);
 				Colour newThroughput = pathThroughput * (bsdfVal * cosTheta) / pdf;
-
 				Ray newRay(shadingData.x + wi * EPSILON, wi);
-				return direct + indirectVPL +
-					pathTrace(newRay, newThroughput, depth + 1, sampler);
+				return direct + indirectVPL + pathTrace(newRay, newThroughput, depth + 1, sampler);
+				//return indirectVPL + pathTrace(newRay, newThroughput, depth + 1, sampler);
 			}
 			return direct + indirectVPL;
+			//return indirectVPL; // test radiuosity
 		}
 
 		// 背景处理

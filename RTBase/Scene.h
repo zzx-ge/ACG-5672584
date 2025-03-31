@@ -130,7 +130,7 @@ public:
 
 		int numVPLs = 1000;
 		MTRandom initSampler(42);
-		//std::vector<VPL>vpls = generateVPLs(numVPLs, &initSampler);
+		std::vector<VPL>vpls = generateVPLs(numVPLs, &initSampler);
 	}
 
 	IntersectionData traverse(const Ray& ray)
@@ -280,41 +280,58 @@ public:
 			// 采样光源
 			float pmf;
 			Light* light = this->sampleLight(sampler, pmf);
-			Colour Le;
-			float lightPdf;
+			if (light->isArea()) {
+				Colour Le;
+				Vec3 origin, normal;
+				float lightPdf;
+				float dirPdf;
 
-			// 从光源上采样一个点
-			Vec3 origin = light->samplePositionFromLight(sampler, lightPdf);
+				// 从光源上采样一个点
+				origin = light->samplePositionFromLight(sampler, lightPdf);
+				ShadingData sd;
+				normal = light->normal(sd, origin);
 
-			// 构造 dummy shadingData（用于方向采样）
-			ShadingData dummy;
-			dummy.x = origin;
-			dummy.sNormal = Vec3(0, 1, 0); // 任意单位向上法线
-			dummy.wo = Vec3(0, -1, 0);     // 任意方向（可选为 -normal）
-			dummy.frame.fromVector(dummy.sNormal);
+				// 构造 dummy shadingData（用于方向采样）
+				ShadingData dummy;
+				dummy.x = origin;
+				dummy.sNormal = normal; // 任意单位向上法线
+				dummy.wo = -normal;     // 任意方向（可选为 -normal）
+				dummy.frame.fromVector(dummy.sNormal);
 
-			// 从光源上采样出射方向
-			Vec3 wi = light->sample(dummy, sampler, Le, lightPdf);
+				// 从光源上采样出射方向
+				Vec3 wi = light->sample(dummy, sampler, Le, dirPdf);
 
-			// 发射光线
-			Ray ray(origin + wi * EPSILON, wi);
-			IntersectionData intersection = this->traverse(ray);
-			ShadingData shadingData = this->calculateShadingData(intersection, ray);
+				// 发射光线
+				Ray ray(origin + normal * EPSILON, wi);
+				IntersectionData intersection = this->traverse(ray);
+				ShadingData shadingData = this->calculateShadingData(intersection, ray);
 
-			if (intersection.t < FLT_MAX && !shadingData.bsdf->isLight()) {
-				Colour fr = shadingData.bsdf->evaluate(shadingData, -wi);
-				float cosTheta = std::max(0.f, Dot(shadingData.sNormal, -wi));
+				if (intersection.t < FLT_MAX && !shadingData.bsdf->isLight() && !shadingData.bsdf->isPureSpecular()) {
+					Colour fr = shadingData.bsdf->evaluate(shadingData, -wi);
+					float dist2 = (shadingData.x - origin).lengthSq();
+					float cosLight = std::max(Dot(normal, wi), 0.f);
+					if (cosLight > 1e-6f && dist2 > 1e-6f) {
+						dirPdf = dirPdf * dist2 / cosLight;
+						lightPdf = lightPdf * dist2 / cosLight;
+					}
+					else {
+						dirPdf = 0.f;
+						lightPdf = 0.f;
+					}
+					float cosTheta = std::max(0.f, Dot(shadingData.sNormal, -wi));
+					float G = (cosLight * cosTheta) / dist2;
 
-				VPL vpl;
-				vpl.position = shadingData.x;
-				vpl.normal = shadingData.sNormal;
-				vpl.bsdf = shadingData.bsdf;
-				vpl.wi = -wi;
-				vpl.pdf_light = lightPdf * pmf;
-				vpl.flux = Le * fr * cosTheta / (vpl.pdf_light + 1e-6f);
+					VPL vpl;
+					vpl.position = shadingData.x;
+					vpl.normal = shadingData.sNormal;
+					vpl.bsdf = shadingData.bsdf;
+					vpl.wi = -wi;
+					vpl.pdf_light = lightPdf * pmf * dirPdf;
+					vpl.flux = Le * fr * G / (vpl.pdf_light + 1e-6f);
 
-				vpls.push_back(vpl);
-			}
+					vpls.push_back(vpl);
+				}
+			}	
 		}
 
 		return vpls;

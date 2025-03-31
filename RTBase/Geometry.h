@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "Core.h"
 #include "Sampling.h"
@@ -10,6 +10,15 @@ struct IntersectionData
 	float alpha;
 	float beta;
 	float gamma;
+};
+
+struct PathVertex {
+	Vec3 position;
+	Vec3 normal;
+	Vec3 wi;
+	Colour beta;
+	float pdf;
+	const BSDF* bsdf;
 };
 
 class Ray
@@ -219,6 +228,34 @@ public:
 
 	Vec3 centroid() const {
 		return (vertices[0].p + vertices[1].p + vertices[2].p) / 3;
+	}
+
+	bool inside(const Vec3 point, float epsilon = 1e-4f) {
+		// 1. 投影判断：点是否在三角形平面上（用法线投影）
+		float planeDist = Dot(n, point - vertices[0].p);
+		if (std::abs(planeDist) > epsilon)
+			return false;
+
+		// 2. 使用重心坐标判断是否在三角形内部
+		Vec3 v0 = vertices[1].p - vertices[0].p;
+		Vec3 v1 = vertices[2].p - vertices[0].p;
+		Vec3 v2 = point - vertices[0].p;
+
+		float d00 = Dot(v0, v0);
+		float d01 = Dot(v0, v1);
+		float d11 = Dot(v1, v1);
+		float d20 = Dot(v2, v0);
+		float d21 = Dot(v2, v1);
+
+		float denom = d00 * d11 - d01 * d01;
+		if (std::abs(denom) < 1e-8f)
+			return false; // 退化三角形
+
+		float v = (d11 * d20 - d01 * d21) / denom;
+		float w = (d00 * d21 - d01 * d20) / denom;
+		float u = 1.0f - v - w;
+
+		return (u >= -epsilon && v >= -epsilon && w >= -epsilon);
 	}
 };
 
