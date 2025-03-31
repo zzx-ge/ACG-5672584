@@ -19,8 +19,8 @@ int main(int argc, char* argv[])
 
 	// Initialize default parameters
 	//std::string sceneName = "bathroom";
-	std::string sceneName = "glass-of-water";
-	//std::string sceneName = "cornell-box";
+	//std::string sceneName = "glass-of-water";
+	std::string sceneName = "cornell-box";
 	//std::string sceneName = "MaterialsScene";
 	std::string filename = "GI.hdr";
 	unsigned int SPP = 8192;
@@ -113,6 +113,7 @@ int main(int argc, char* argv[])
 		// Time how long a render call takes
 		timer.reset();
 		rt.render();
+
 		float t = timer.dt();
 		// Write
 		std::cout << t << std::endl;
@@ -131,6 +132,7 @@ int main(int argc, char* argv[])
 			rt.saveHDR(filename);
 			break;
 		}
+		//rt.saveHDR(filename);
 		canvas.present();
 	}
 	return 0;

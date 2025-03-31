@@ -265,22 +265,26 @@ public:
 		SPP = 0;
 	}
 
-	void splat(const float x, const float y, const Colour& L)
-	{
-		int ix = static_cast<int>(x);
-		int iy = static_cast<int>(y);
-		if (ix < 0 || ix >= (int)width || iy < 0 || iy >= (int)height)
-			return;
-		int index = iy * width + ix;
-
-		film[index] = film[index] + L;
-		weightBuffer[index] += 1.0f;
-		sppBuffer[index]++;
-
-		int pixelIndex = index * 3;
-		colourBuffer[pixelIndex + 0] = film[index].r / weightBuffer[index];
-		colourBuffer[pixelIndex + 1] = film[index].g / weightBuffer[index];
-		colourBuffer[pixelIndex + 2] = film[index].b / weightBuffer[index];
+	void splat(const float x, const float y, const Colour& L) {
+		float filterWeights[25]; // Storage to cache weightsunsigned int indices[25]; // Store indices to minimize computations unsigned int used = 0;
+		unsigned int indices[25];
+		unsigned int used = 0;
+		float total = 0;
+		int size = filter->size();
+		for (int i = -size; i <= size; i++) {
+			for (int j = -size; j <= size; j++) {
+				int px = (int)x + j;
+				int py = (int)y + i;
+				if (px >= 0 && px < width && py >= 0 && py < height) {
+					indices[used] = (py * width) + px;
+					filterWeights[used] = filter->filter(j, i); total += filterWeights[used];
+					used++;
+				}
+			}
+		}
+		for (int i = 0; i < used; i++) {
+			film[indices[i]] = film[indices[i]] + (L * filterWeights[i] / total);
+		}
 	}
 
 	void incrementSPP()
