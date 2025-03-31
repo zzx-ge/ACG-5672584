@@ -49,7 +49,7 @@ public:
 
 		Colour result(0.0f);
 		const float epsilon = 1e-3f;
-
+		float allLightPdfSum = 0.f;
 		
 		// ========== 光源采样 ==========
 		if (!scene->lights.empty()) {
@@ -90,7 +90,6 @@ public:
 					}
 
 					// 计算所有光源在wi方向的总pdf
-					float allLightPdfSum = 0.f;
 					for (auto otherLight : scene->lights) {
 						float pmf = scene->pmf(otherLight);
 						float otherPdf = 0.f;
@@ -151,33 +150,9 @@ public:
 			}
 
 			if (!Le.isZero()) {
-				// 计算光源PDF（包含PMF）
-				float lightPdfSum = 0.0f;
-				
-				for (auto light : scene->lights) {
-					float pmf = scene->pmf(light);
-					if (light->isArea()) {
-						AreaLight* arealight = static_cast<AreaLight*> (light);
-						if (arealight->triangle->inside(lightpos)) {
-							float distSq = (lightpos - shadingData.x).lengthSq();
-							float cosLight = Dot(-wi, n_light);
-							float pdf_dir = (cosLight > 0) ? light->PDF(shadingData, wi) * distSq / cosLight : 0.0f;
-							lightPdfSum += pmf * pdf_dir;
-						}
-					}
-					else {
-						// Environment light
-						if (envintersect) lightPdfSum += pmf * light->PDF(shadingData, wi);
-					}
-				}
-
-				if (scene->background && envintersect) {
-					float bgpmf = scene->pmf(scene->background);
-					lightPdfSum += bgpmf * scene->background->PDF(shadingData, wi);
-				}
 
 				// MIS权重
-				float misWeight = bsdfPdf / (bsdfPdf + lightPdfSum + 1e-6f);
+				float misWeight = bsdfPdf / (bsdfPdf + allLightPdfSum + 1e-6f);
 				float cosTheta = Dot(wi, shadingData.sNormal);
 				result = result + bsdfVal * Le * cosTheta * misWeight / bsdfPdf;
 			}
@@ -299,8 +274,8 @@ public:
 			lightPdf = lightPdf / max(cosThetaLight, EPSILON);
 			
 			// 初始化路径贡献 (beta)
-			float pmf = scene->pmf(light);
-			Colour beta = light->evaluate(ShadingData(), wi) * cosThetaLight / (lightPdf * dirPdf * pmf);
+			float Pmf = scene->pmf(light);
+			Colour beta = light->evaluate(ShadingData(), wi) * cosThetaLight / (dirPdf * Pmf);
 
 
 			// 初始光线
@@ -345,7 +320,7 @@ public:
 							}
 							allLightPdfSum += pmf * otherPdf;
 						}
-						float misWeight = (lightPdf * dirPdf) / (allLightPdfSum + bsdfPdf + 1e-6f);
+						float misWeight = (dirPdf * Pmf) / (allLightPdfSum + bsdfPdf + 1e-6f);
 
 						// 累加贡献到图像
 						Colour contrib = beta * bsdfVal * cosTheta * misWeight;
@@ -470,11 +445,10 @@ public:
 		// Get CPU core count for multi-threading
 		int numThreads = std::thread::hardware_concurrency();
 
-		ShaderManager shadermanager;
-
 		std::vector<std::thread> workers;
 		std::mutex filmMutex;  // Mutex for film updates
 
+		
 		// Lambda function for each thread to process part of the image
 		auto renderTile = [&](int threadID, int startY, int endY) {
 			MTRandom sampler(threadID); // Unique sampler per thread
@@ -516,6 +490,7 @@ public:
 			}
 		};
 
+		
 		// Multi-threading setup with better load balancing
 		int tileHeight = max(1, film->height / numThreads);
 		for (int i = 0; i < numThreads; i++) {
@@ -528,6 +503,26 @@ public:
 		for (auto& worker : workers) {
 			worker.join();
 		}
+		
+		/*
+
+		// 光源路径追踪（同样是多线程实现）
+		auto lightTraceWorker = [&](int pathsPerThread, int threadID) {
+			MTRandom sampler(threadID + 1000); // 避免与相机采样重复
+			traceLightPaths(&sampler, pathsPerThread, MAX_DEPTH);
+		};
+
+		workers.clear();
+		int totalPaths = film->width * film->height;
+		int pathsPerThread = totalPaths / numThreads;
+
+		for (int i = 0; i < numThreads; ++i) {
+			workers.emplace_back(lightTraceWorker, pathsPerThread, i);
+		}
+
+		// 等待光源路径追踪完成
+		for (auto& worker : workers) worker.join();
+		*/
 	}
 
 	int getSPP()

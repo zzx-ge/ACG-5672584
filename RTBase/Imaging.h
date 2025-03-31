@@ -245,7 +245,7 @@ public:
 			film[indices[i]] = film[indices[i]] + (L * filterWeights[i] / total);
 		}
 	}
-	void tonemap(float r, float g, float b, unsigned char& outR, unsigned char& outG, unsigned char& outB, float exposure = 10.f)
+	void tonemap(float r, float g, float b, unsigned char& outR, unsigned char& outG, unsigned char& outB, float exposure = 1.f)
 	{
 		// Apply exposure correction
 		r *= exposure;

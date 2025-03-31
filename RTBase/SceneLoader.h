@@ -272,13 +272,14 @@ Scene* loadScene(std::string sceneName)
 	{
 		loadInstance(sceneName, meshTriangles, meshMaterials, gemscene.instances[i], textureManager);
 	}
-	bool useEnvironmentMap = false;
 	Light* background;
-	if (useEnvironmentMap && gemscene.findProperty("envmap").getValue("") != "")
+	std::cout << gemscene.findProperty("envmap").getValue("") << std::endl;
+	if (gemscene.findProperty("envmap").getValue("") != "")
 	{
 		Texture* env = loadTexture(sceneName + "/" + gemscene.findProperty("envmap").getValue(""), textureManager);
 		background = new EnvironmentMap(env);
-	} else
+	}
+	else
 	{
 		background = new BackgroundColour(Colour(0.0f, 0.0f, 0.0f));
 	}

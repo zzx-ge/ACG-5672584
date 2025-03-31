@@ -119,15 +119,6 @@ public:
 			}
 		}
 
-		for (int i = 0; i < materials.size(); ++i) {
-			if (materials[i]->isLight()) {
-				std::cout << "Material " << i << " is light. Emission: "
-					<< materials[i]->emission.r << ", "
-					<< materials[i]->emission.g << ", "
-					<< materials[i]->emission.b << std::endl;
-			}
-		}
-
 		int numVPLs = 1000;
 		MTRandom initSampler(42);
 		std::vector<VPL>vpls = generateVPLs(numVPLs, &initSampler);

@@ -12,15 +12,6 @@ struct IntersectionData
 	float gamma;
 };
 
-struct PathVertex {
-	Vec3 position;
-	Vec3 normal;
-	Vec3 wi;
-	Colour beta;
-	float pdf;
-	const BSDF* bsdf;
-};
-
 class Ray
 {
 public:

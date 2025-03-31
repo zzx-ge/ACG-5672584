@@ -291,7 +291,7 @@ public:
 	Colour evaluate(const ShadingData& shadingData, const Vec3& wi) override
 	{
 		// Add correct evaluation code here
-		return 0.f;
+		return Colour(0.f);
 	}
 	float PDF(const ShadingData& shadingData, const Vec3& wi) override
 	{
